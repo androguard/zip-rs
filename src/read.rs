@@ -6,11 +6,8 @@ use crate::result::{ZipError, ZipResult};
 use crate::spec;
 use crate::zipcrypto::ZipCryptoReader;
 use crate::zipcrypto::ZipCryptoReaderValid;
-use std::borrow::Cow;
 use std::collections::HashMap;
-use std::fs;
 use std::io::{self, prelude::*};
-use std::path::Path;
 
 use crate::cp437::FromCp437;
 use crate::types::{DateTime, System, ZipFileData};
@@ -43,13 +40,14 @@ mod ffi {
 ///     let mut reader = std::io::Cursor::new(buf);
 ///
 ///     let mut zip = zip::ZipArchive::new(reader)?;
-///
-///     for i in 0..zip.len() {
+///     
+///     let i = 0;
+///     //for i in 0..zip.len() {
 ///         let mut file = zip.by_index(i).unwrap();
 ///         println!("Filename: {}", file.name());
 ///         let first_byte = file.bytes().next().unwrap()?;
 ///         println!("{}", first_byte);
-///     }
+///     //}
 ///     Ok(())
 /// }
 /// ```
@@ -62,12 +60,12 @@ pub struct ZipArchive<R: Read + io::Seek> {
     comment: Vec<u8>,
 }
 
-enum CryptoReader<'a> {
-    Plaintext(io::Take<&'a mut dyn Read>),
-    ZipCrypto(ZipCryptoReaderValid<io::Take<&'a mut dyn Read>>),
+enum CryptoReader<R: io::Read> {
+    Plaintext(io::Take<R>),
+    ZipCrypto(ZipCryptoReaderValid<io::Take<R>>),
 }
 
-impl<'a> Read for CryptoReader<'a> {
+impl <R: io::Read> Read for CryptoReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             CryptoReader::Plaintext(r) => r.read(buf),
@@ -76,9 +74,9 @@ impl<'a> Read for CryptoReader<'a> {
     }
 }
 
-impl<'a> CryptoReader<'a> {
+impl <R: io::Read> CryptoReader<R> {
     /// Consumes this decoder, returning the underlying reader.
-    pub fn into_inner(self) -> io::Take<&'a mut dyn Read> {
+    pub fn into_inner(self) -> io::Take<R> {
         match self {
             CryptoReader::Plaintext(r) => r,
             CryptoReader::ZipCrypto(r) => r.into_inner(),
@@ -86,20 +84,20 @@ impl<'a> CryptoReader<'a> {
     }
 }
 
-enum ZipFileReader<'a> {
+enum ZipFileReader<R: io::Read> {
     NoReader,
-    Stored(Crc32Reader<CryptoReader<'a>>),
+    Stored(Crc32Reader<CryptoReader<R>>),
     #[cfg(any(
         feature = "deflate",
         feature = "deflate-miniz",
         feature = "deflate-zlib"
     ))]
-    Deflated(Crc32Reader<flate2::read::DeflateDecoder<CryptoReader<'a>>>),
+    Deflated(Crc32Reader<flate2::read::DeflateDecoder<CryptoReader<R>>>),
     #[cfg(feature = "bzip2")]
-    Bzip2(Crc32Reader<BzDecoder<CryptoReader<'a>>>),
+    Bzip2(Crc32Reader<BzDecoder<CryptoReader<R>>>),
 }
 
-impl<'a> Read for ZipFileReader<'a> {
+impl <R: io::Read> Read for ZipFileReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             ZipFileReader::NoReader => panic!("ZipFileReader was in an invalid state"),
@@ -116,9 +114,9 @@ impl<'a> Read for ZipFileReader<'a> {
     }
 }
 
-impl<'a> ZipFileReader<'a> {
+impl <R: io::Read> ZipFileReader<R> {
     /// Consumes this decoder, returning the underlying reader.
-    pub fn into_inner(self) -> io::Take<&'a mut dyn Read> {
+    pub fn into_inner(self) -> io::Take<R> {
         match self {
             ZipFileReader::NoReader => panic!("ZipFileReader was in an invalid state"),
             ZipFileReader::Stored(r) => r.into_inner().into_inner(),
@@ -135,17 +133,17 @@ impl<'a> ZipFileReader<'a> {
 }
 
 /// A struct for reading a zip file
-pub struct ZipFile<'a> {
-    data: Cow<'a, ZipFileData>,
-    reader: ZipFileReader<'a>,
+pub struct ZipFile<R: io::Read> {
+    data: ZipFileData,
+    reader: ZipFileReader<R>,
 }
 
-fn make_reader<'a>(
+fn make_reader<R: io::Read>(
     compression_method: crate::compression::CompressionMethod,
     crc32: u32,
-    reader: io::Take<&'a mut dyn io::Read>,
+    reader: io::Take<R>,
     password: Option<&[u8]>,
-) -> ZipResult<ZipFileReader<'a>> {
+) -> ZipResult<ZipFileReader<R>> {
     let reader = match password {
         None => CryptoReader::Plaintext(reader),
         Some(password) => match ZipCryptoReader::new(reader, password).validate(crc32)? {
@@ -313,7 +311,7 @@ impl<R: Read + io::Seek> ZipArchive<R> {
             comment: footer.zip_file_comment,
         })
     }
-
+/*
     /// Extract a Zip archive into a directory.
     ///
     /// Paths are sanitized so that they cannot escape the given directory.
@@ -355,16 +353,14 @@ impl<R: Read + io::Seek> ZipArchive<R> {
 
         Ok(())
     }
-
+*/
     /// Number of files contained in this zip.
     ///
     /// ```no_run
     /// let mut zip = zip::ZipArchive::new(std::io::Cursor::new(vec![])).unwrap();
     ///
-    /// for i in 0..zip.len() {
-    ///     let mut file = zip.by_index(i).unwrap();
-    ///     // Do something with file i
-    /// }
+    /// let mut file = zip.by_index(0).unwrap();
+    /// // Do something with file 0
     /// ```
     pub fn len(&self) -> usize {
         self.files.len()
@@ -394,24 +390,24 @@ impl<R: Read + io::Seek> ZipArchive<R> {
     }
 
     /// Search for a file entry by name, decrypt with given password
-    pub fn by_name_decrypt<'a>(
-        &'a mut self,
+    pub fn by_name_decrypt(
+        self,
         name: &str,
         password: &[u8],
-    ) -> ZipResult<ZipFile<'a>> {
+    ) -> ZipResult<ZipFile<R>> {
         self.by_name_with_optional_password(name, Some(password))
     }
 
     /// Search for a file entry by name
-    pub fn by_name<'a>(&'a mut self, name: &str) -> ZipResult<ZipFile<'a>> {
+    pub fn by_name(self, name: &str) -> ZipResult<ZipFile<R>> {
         self.by_name_with_optional_password(name, None)
     }
 
-    fn by_name_with_optional_password<'a>(
-        &'a mut self,
+    fn by_name_with_optional_password(
+        self,
         name: &str,
         password: Option<&[u8]>,
-    ) -> ZipResult<ZipFile<'a>> {
+    ) -> ZipResult<ZipFile<R>> {
         let index = match self.names_map.get(name) {
             Some(index) => *index,
             None => {
@@ -422,28 +418,28 @@ impl<R: Read + io::Seek> ZipArchive<R> {
     }
 
     /// Get a contained file by index, decrypt with given password
-    pub fn by_index_decrypt<'a>(
-        &'a mut self,
+    pub fn by_index_decrypt(
+        self,
         file_number: usize,
         password: &[u8],
-    ) -> ZipResult<ZipFile<'a>> {
+    ) -> ZipResult<ZipFile<R>> {
         self.by_index_with_optional_password(file_number, Some(password))
     }
 
     /// Get a contained file by index
-    pub fn by_index<'a>(&'a mut self, file_number: usize) -> ZipResult<ZipFile<'a>> {
+    pub fn by_index(self, file_number: usize) -> ZipResult<ZipFile<R>> {
         self.by_index_with_optional_password(file_number, None)
     }
 
-    fn by_index_with_optional_password<'a>(
-        &'a mut self,
+    fn by_index_with_optional_password(
+        mut self,
         file_number: usize,
         mut password: Option<&[u8]>,
-    ) -> ZipResult<ZipFile<'a>> {
+    ) -> ZipResult<ZipFile<R>> {
         if file_number >= self.files.len() {
             return Err(ZipError::FileNotFound);
         }
-        let data = &mut self.files[file_number];
+        let mut data = self.files[file_number].clone(); // TODO
 
         match (password, data.encrypted) {
             (None, true) => return Err(ZipError::PasswordRequired),
@@ -466,11 +462,11 @@ impl<R: Read + io::Seek> ZipArchive<R> {
             data.header_start + magic_and_header + file_name_length + extra_field_length;
 
         self.reader.seek(io::SeekFrom::Start(data.data_start))?;
-        let limit_reader = (self.reader.by_ref() as &mut dyn Read).take(data.compressed_size);
+        let limit_reader = self.reader.take(data.compressed_size);
 
         Ok(ZipFile {
             reader: make_reader(data.compression_method, data.crc32, limit_reader, password)?,
-            data: Cow::Borrowed(data),
+            data: data,
         })
     }
 
@@ -596,7 +592,7 @@ fn parse_extra_field(file: &mut ZipFileData, data: &[u8]) -> ZipResult<()> {
 }
 
 /// Methods for retrieving information on zip files
-impl<'a> ZipFile<'a> {
+impl <R: io::Read> ZipFile<R> {
     /// Get the version of the file
     pub fn version_made_by(&self) -> (u8, u8) {
         (
@@ -698,133 +694,17 @@ impl<'a> ZipFile<'a> {
     pub fn header_start(&self) -> u64 {
         self.data.header_start
     }
+
+    /// Unwrap the inner reader so it may be reused
+    pub fn into_inner(self) -> R {
+        self.reader.into_inner().into_inner()
+    }
 }
 
-impl<'a> Read for ZipFile<'a> {
+impl <R: io::Read> Read for ZipFile<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.reader.read(buf)
     }
-}
-
-impl<'a> Drop for ZipFile<'a> {
-    fn drop(&mut self) {
-        // self.data is Owned, this reader is constructed by a streaming reader.
-        // In this case, we want to exhaust the reader so that the next file is accessible.
-        if let Cow::Owned(_) = self.data {
-            let mut buffer = [0; 1 << 16];
-
-            // Get the inner `Take` reader so all decryption, decompression and CRC calculation is skipped.
-            let innerreader = ::std::mem::replace(&mut self.reader, ZipFileReader::NoReader);
-            let mut reader: std::io::Take<&mut dyn std::io::Read> = innerreader.into_inner();
-
-            loop {
-                match reader.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(_) => (),
-                    Err(e) => panic!(
-                        "Could not consume all of the output of the current ZipFile: {:?}",
-                        e
-                    ),
-                }
-            }
-        }
-    }
-}
-
-/// Read ZipFile structures from a non-seekable reader.
-///
-/// This is an alternative method to read a zip file. If possible, use the ZipArchive functions
-/// as some information will be missing when reading this manner.
-///
-/// Reads a file header from the start of the stream. Will return `Ok(Some(..))` if a file is
-/// present at the start of the stream. Returns `Ok(None)` if the start of the central directory
-/// is encountered. No more files should be read after this.
-///
-/// The Drop implementation of ZipFile ensures that the reader will be correctly positioned after
-/// the structure is done.
-///
-/// Missing fields are:
-/// * `comment`: set to an empty string
-/// * `data_start`: set to 0
-/// * `external_attributes`: `unix_mode()`: will return None
-pub fn read_zipfile_from_stream<'a, R: io::Read>(
-    reader: &'a mut R,
-) -> ZipResult<Option<ZipFile<'_>>> {
-    let signature = reader.read_u32::<LittleEndian>()?;
-
-    match signature {
-        spec::LOCAL_FILE_HEADER_SIGNATURE => (),
-        spec::CENTRAL_DIRECTORY_HEADER_SIGNATURE => return Ok(None),
-        _ => return Err(ZipError::InvalidArchive("Invalid local file header")),
-    }
-
-    let version_made_by = reader.read_u16::<LittleEndian>()?;
-    let flags = reader.read_u16::<LittleEndian>()?;
-    let encrypted = flags & 1 == 1;
-    let is_utf8 = flags & (1 << 11) != 0;
-    let using_data_descriptor = flags & (1 << 3) != 0;
-    #[allow(deprecated)]
-    let compression_method = CompressionMethod::from_u16(reader.read_u16::<LittleEndian>()?);
-    let last_mod_time = reader.read_u16::<LittleEndian>()?;
-    let last_mod_date = reader.read_u16::<LittleEndian>()?;
-    let crc32 = reader.read_u32::<LittleEndian>()?;
-    let compressed_size = reader.read_u32::<LittleEndian>()?;
-    let uncompressed_size = reader.read_u32::<LittleEndian>()?;
-    let file_name_length = reader.read_u16::<LittleEndian>()? as usize;
-    let extra_field_length = reader.read_u16::<LittleEndian>()? as usize;
-
-    let mut file_name_raw = vec![0; file_name_length];
-    reader.read_exact(&mut file_name_raw)?;
-    let mut extra_field = vec![0; extra_field_length];
-    reader.read_exact(&mut extra_field)?;
-
-    let file_name = match is_utf8 {
-        true => String::from_utf8_lossy(&*file_name_raw).into_owned(),
-        false => file_name_raw.clone().from_cp437(),
-    };
-
-    let mut result = ZipFileData {
-        system: System::from_u8((version_made_by >> 8) as u8),
-        version_made_by: version_made_by as u8,
-        encrypted,
-        compression_method,
-        last_modified_time: DateTime::from_msdos(last_mod_date, last_mod_time),
-        crc32,
-        compressed_size: compressed_size as u64,
-        uncompressed_size: uncompressed_size as u64,
-        file_name,
-        file_name_raw,
-        file_comment: String::new(), // file comment is only available in the central directory
-        // header_start and data start are not available, but also don't matter, since seeking is
-        // not available.
-        header_start: 0,
-        data_start: 0,
-        // The external_attributes field is only available in the central directory.
-        // We set this to zero, which should be valid as the docs state 'If input came
-        // from standard input, this field is set to zero.'
-        external_attributes: 0,
-    };
-
-    match parse_extra_field(&mut result, &extra_field) {
-        Ok(..) | Err(ZipError::Io(..)) => {}
-        Err(e) => return Err(e),
-    }
-
-    if encrypted {
-        return unsupported_zip_error("Encrypted files are not supported");
-    }
-    if using_data_descriptor {
-        return unsupported_zip_error("The file length is not available in the local header");
-    }
-
-    let limit_reader = (reader as &'a mut dyn io::Read).take(result.compressed_size as u64);
-
-    let result_crc32 = result.crc32;
-    let result_compression_method = result.compression_method;
-    Ok(Some(ZipFile {
-        data: Cow::Owned(result),
-        reader: make_reader(result_compression_method, result_crc32, limit_reader, None)?,
-    }))
 }
 
 #[cfg(test)]
@@ -874,30 +754,14 @@ mod test {
     }
 
     #[test]
-    fn zip_read_streaming() {
-        use super::read_zipfile_from_stream;
-        use std::io;
-
-        let mut v = Vec::new();
-        v.extend_from_slice(include_bytes!("../tests/data/mimetype.zip"));
-        let mut reader = io::Cursor::new(v);
-        loop {
-            match read_zipfile_from_stream(&mut reader).unwrap() {
-                None => break,
-                _ => (),
-            }
-        }
-    }
-
-    #[test]
     fn zip_clone() {
         use super::ZipArchive;
         use std::io::{self, Read};
 
         let mut v = Vec::new();
         v.extend_from_slice(include_bytes!("../tests/data/mimetype.zip"));
-        let mut reader1 = ZipArchive::new(io::Cursor::new(v)).unwrap();
-        let mut reader2 = reader1.clone();
+        let reader1 = ZipArchive::new(io::Cursor::new(v)).unwrap();
+        let reader2 = reader1.clone();
 
         let mut file1 = reader1.by_index(0).unwrap();
         let mut file2 = reader2.by_index(0).unwrap();
@@ -937,9 +801,10 @@ mod test {
 
         let mut v = Vec::new();
         v.extend_from_slice(include_bytes!("../tests/data/files_and_dirs.zip"));
-        let mut zip = ZipArchive::new(io::Cursor::new(v)).unwrap();
+        let zip = ZipArchive::new(io::Cursor::new(v)).unwrap();
 
-        for i in 0..zip.len() {
+        let i = 0;
+        //for i in 0..zip.len() {
             let zip_file = zip.by_index(i).unwrap();
             let full_name = zip_file.sanitized_name();
             let file_name = full_name.file_name().unwrap().to_str().unwrap();
@@ -947,6 +812,6 @@ mod test {
                 (file_name.starts_with("dir") && zip_file.is_dir())
                     || (file_name.starts_with("file") && zip_file.is_file())
             );
-        }
+        //}
     }
 }

@@ -1,11 +1,11 @@
 extern crate zip;
 
+/*
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 
 use zip::ZipArchive;
-
 // This tests extracting the contents of a zip file
 #[test]
 fn extract() {
@@ -19,4 +19,4 @@ fn extract() {
 
     // Cleanup
     fs::remove_dir_all("test_directory").expect("failed to remove extracted files");
-}
+}*/

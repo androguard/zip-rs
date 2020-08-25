@@ -36,7 +36,7 @@ fn write_to_zip_file(file: &mut Cursor<Vec<u8>>) -> zip::result::ZipResult<()> {
 }
 
 fn read_zip_file(zip_file: &mut Cursor<Vec<u8>>) -> zip::result::ZipResult<String> {
-    let mut archive = zip::ZipArchive::new(zip_file).unwrap();
+    let archive = zip::ZipArchive::new(zip_file).unwrap();
 
     let expected_file_names = ["test/", "test/☃.txt", "test/lorem_ipsum.txt"];
     let expected_file_names = HashSet::from_iter(expected_file_names.iter().map(|&v| v));
